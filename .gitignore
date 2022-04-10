@@ -1,0 +1,18 @@
+
+# Contract
+
+yarn.lock
+node_modules/
+node_modules/
+build/
+package-lock.json
+.env
+# truffle
+build
+
+# typechain
+types
+
+# buidler
+artifacts
+cache
