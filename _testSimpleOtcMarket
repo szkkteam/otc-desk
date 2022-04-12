@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.7;
+
+import "truffle/Assert.sol";
+import "truffle/DeployedAddresses.sol";
+
+import './MarketUser.sol';
+import "../contracts/SimpleOtcMarket.sol";
+import '../contracts/interfaces/IERC20.sol';
+import '../contracts/interfaces/uniswap/IUniswapV2Router02.sol';
+
+
+contract TestSimpleOtcMarket {
+    uint public initialBalance = 10 ether;
+
+    address public daiAddr = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+    address public usdcAddr = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address public wethAddr = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+
+    SimpleOtcMarket market;
+    MarketUser user1;
+
+    function beforeAll() public {
+        market = SimpleOtcMarket(DeployedAddresses.SimpleOtcMarket());            
+        
+        user1 = MarketUser(address(market));
+
+        swapEthTo(daiAddr, 1 ether);
+        swapEthTo(usdcAddr, 1 ether);
+
+    }
+
+    function swapEthTo(address tokenOut, uint256 amount) public payable {
+        IUniswapV2Router02 router = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
+        
+
+        address[] memory path = new address[](2);
+        path[0] = wethAddr;
+        path[1] = tokenOut;
+        // Get some dai
+        router.swapExactETHForTokens{value: amount}(0, path, address(this), block.timestamp);
+    }
+
+    function testBasicTrade() public {
+        
+        IERC20 dai = IERC20(daiAddr);
+        IERC20 usdc = IERC20(usdcAddr);
+        // Approve dai to spend
+        uint256 daiBalance = dai.balanceOf(address(this));
+        uint256 usdcBalance = usdc.balanceOf(address(this));
+
+        dai.approve(address(market), daiBalance);
+
+        usdc.transfer(address(user1), usdcBalance);
+        user1.doApprove(usdc, address(market), usdcBalance);
+
+        
+        //uint256 usdcBalance = usdc.balanceOf(address(this));
+
+        uint256 offerId;
+        offerId = market.offer(daiAddr, usdcAddr, 1, 1);
+
+        Assert.equal(dai.balanceOf(address(this)), uint(daiBalance - uint(1)), "Invalid balance after market make");
+        Assert.equal(dai.balanceOf(address(market)), uint(1), "Contract does not hold the funds");
+
+        
+        (, , uint256 offerAmount, uint256 offerDiscount) = market.getOffer(offerId);
+        
+        //uint256 usdcTaken = market.getAmountInForOffer(offerId, offerAmount);
+        /*
+        user1.doBuy(offerId, offerAmount);
+
+        //Assert.equal(usdc.balanceOf(address(this)), uint(daiBalance), "Invalid balance after market make");
+        Assert.equal(dai.balanceOf(address(this)), uint(daiBalance), "Invalid balance after market make");
+        Assert.equal(dai.balanceOf(address(market)), uint(0), "Contract does not give back the token");
+        */
+    }
+}

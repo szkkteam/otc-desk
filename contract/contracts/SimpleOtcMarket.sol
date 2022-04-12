@@ -11,11 +11,11 @@ import './interfaces/IERC20.sol';
 
 contract SimpleOtcMarket is Ownable, ReentrancyGuard{
 
-    bytes4 private constant TRANSFER = bytes4(keccak256(bytes('transfer(address,uint256)')));
-    bytes4 private constant TRANSFER_FROM = bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+    bytes4 private constant TRANSFER = bytes4(keccak256(bytes('transfer(address,uint)')));
+    bytes4 private constant TRANSFER_FROM = bytes4(keccak256(bytes('transferFrom(address,address,uint)')));
 
     address private _oracleAddress;
-    uint256 private _lastOfferId;
+    uint256 public lastOfferId;
 
     struct OfferInfo {
         address tokenOffer;
@@ -24,13 +24,20 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         address owner;
 
         uint256 amountOffer;
-        uint256 discount; // measured in 0.0001 %
+        int256 discount; // measured in 0.0001 %
 
         uint64 createdAt;
     }
 
     mapping (uint256 => OfferInfo) public offers;
     
+    event OfferMade(
+        bytes32 indexed offerId, 
+        address indexed tokenOffer, 
+        address indexed tokenWants,
+        uint256 amount,
+        int256 discount
+    );
 
     /**
         TODO:
@@ -81,6 +88,18 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         return offers[offerId].owner;
     }
 
+    function getOffer(uint256 offerId) public view returns (/*address tokenOffer, address tokenWant, uint amountOffer, int discount*/ OfferInfo memory) {
+        OfferInfo memory _offer = offers[offerId];
+        /*
+        tokenOffer = _offer.tokenOffer;
+        tokenWant = _offer.tokenWant;
+        amountOffer = _offer.amountOffer;
+        discount = _offer.discount;
+        */
+        return _offer;
+        //return (_offer.tokenOffer, _offer.tokenWant, _offer.amountOffer, _offer.discount);
+    }
+
     function _safeTransfer(address token, address to, uint value) private {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(TRANSFER, to, value));
         require(success && (data.length == 0 || abi.decode(data, (bool))), 'TRANSFER_FAILED');
@@ -88,7 +107,7 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
 
     function _safeTransferFrom(address token, address from, address to, uint value) private {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(TRANSFER_FROM, from, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TRANSFER_FAILED');
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TRANSFER_FROM_FAILED');
     }
 
     /**
@@ -105,11 +124,12 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
     /**
      * Public entry points 
      */
-    function offer(address tokenOffer, address tokenWant, uint256 amountOffer, uint256 discount) public nonReentrant() returns(uint256) {
+    function offer(address tokenOffer, address tokenWant, uint256 amountOffer, int256 discount) public nonReentrant() returns(uint256) {
         require(uint128(amountOffer) == amountOffer);
         require(amountOffer > 0, "ZERO AMOUNT");
         require(tokenOffer != address(0));
         require(tokenWant != address(0));
+        // TODO: Check discount cannot be less then -99.999%
 
         OfferInfo memory _offer;
         _offer.tokenOffer = tokenOffer;
@@ -119,13 +139,16 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         _offer.owner = _msgSender();
         _offer.createdAt = uint64(block.timestamp);
 
-        _lastOfferId += 1;
-        offers[_lastOfferId] = _offer;
+        lastOfferId += 1;
+        offers[lastOfferId] = _offer;
 
         _safeTransferFrom(tokenOffer, _msgSender(), address(this), amountOffer);
 
         // TODO: Event
-        return _lastOfferId;
+        // TODO: Include the token pari which MUST BE SORTED BY UNISWAP!
+        emit OfferMade(bytes32(lastOfferId), tokenOffer, tokenWant, amountOffer, discount);
+
+        return lastOfferId;
     }
 
     function cancel(uint256 offerId) public nonReentrant() canCancel(offerId) returns(bool) {
@@ -139,18 +162,19 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
     }
 
     function take(uint256 offerId, uint256 amount) public nonReentrant() canTake(offerId) returns (bool) {
+        // TODO: Because the market is volatile and during the transaction, the market price can change a lot, introduce slippage
+
         require(uint128(amount) == amount);
         require(amount > 0, "ZERO AMOUNT");
 
         OfferInfo memory _offer = offers[offerId];
-        IERC20 tokenWant = IERC20(_offer.tokenWant);
 
         require(amount <= _offer.amountOffer, "HIGHER THAN OFFER");
-
         uint256 amountIn = getAmountInForOffer(offerId, amount);
-        require(tokenWant.balanceOf(_msgSender()) >= amountIn, "INSUFFICIENT AMOUNT");
 
         offers[offerId].amountOffer -= amount;
+        // TODO: Take fee
+
         _safeTransferFrom(_offer.tokenWant, _msgSender(), _offer.owner, amountIn);
         _safeTransfer(_offer.tokenOffer, _msgSender(), amount);
 
@@ -166,11 +190,8 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
     function getAmountInForOffer(uint256 offerId, uint256 amount) public view canTake(offerId) returns (uint256) {
         OfferInfo memory _offer = offers[offerId];
 
-        IPriceOracle oracle = IPriceOracle(_oracleAddress);
-        uint256 amountIn = oracle.getPriceFor(_offer.tokenOffer, _offer.tokenWant, amount);
-        // Apply discount
-        amountIn = amountIn - ( amountIn / 1000 * _offer.discount);
-
+        uint256 amountIn = IPriceOracle(_oracleAddress).getPriceFor(_offer.tokenOffer, _offer.tokenWant, amount);
+        //return (amountIn * uint256(int256(100000) + _offer.discount)) / 100000;
         return amountIn;
     }
     
