@@ -4,13 +4,13 @@ pragma solidity 0.8.7;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import './interfaces/IPriceOracle.sol';
 
 
 contract SimpleOtcMarket is Ownable, ReentrancyGuard{
-    using SafeERC20 for ERC20;
+    using SafeERC20 for IERC20;
 
     bytes4 private constant TRANSFER = bytes4(keccak256(bytes('transfer(address,uint)')));
     bytes4 private constant TRANSFER_FROM = bytes4(keccak256(bytes('transferFrom(address,address,uint)')));
@@ -89,6 +89,10 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         return offers[offerId].owner;
     }
 
+    function getOfferId() public view returns (bytes32) {
+        return bytes32(lastOfferId);
+    }
+
     function getOffer(uint256 offerId) public view returns (/*address tokenOffer, address tokenWant, uint amountOffer, int discount*/ OfferInfo memory) {
         OfferInfo memory _offer = offers[offerId];
         /*
@@ -144,7 +148,7 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         lastOfferId += 1;
         offers[lastOfferId] = _offer;
 
-        ERC20(tokenOffer).safeTransferFrom(sender, address(this), amountOffer);
+        IERC20(tokenOffer).safeTransferFrom(sender, address(this), amountOffer);
 
         // TODO: Event
         // TODO: Include the token pari which MUST BE SORTED BY UNISWAP!
@@ -177,11 +181,11 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         address sender = _msgSender();
 
         offers[offerId].amountOffer -= amount;
-        
+
         // TODO: Take fee
 
-        ERC20(_offer.tokenWant).safeTransferFrom(sender, _offer.owner, amountIn);
-        ERC20(_offer.tokenOffer).safeTransfer(sender, amount);
+        IERC20(_offer.tokenWant).safeTransferFrom(sender, _offer.owner, amountIn);
+        IERC20(_offer.tokenOffer).safeTransfer(sender, amount);
 
         // TODO: Emit event
         if (offers[offerId].amountOffer == 0) {
