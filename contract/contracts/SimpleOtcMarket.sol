@@ -3,13 +3,14 @@ pragma solidity 0.8.7;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import './interfaces/IPriceOracle.sol';
 
-import './interfaces/IERC20.sol';
 
 contract SimpleOtcMarket is Ownable, ReentrancyGuard{
+    using SafeERC20 for ERC20;
 
     bytes4 private constant TRANSFER = bytes4(keccak256(bytes('transfer(address,uint)')));
     bytes4 private constant TRANSFER_FROM = bytes4(keccak256(bytes('transferFrom(address,address,uint)')));
@@ -124,31 +125,32 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
     /**
      * Public entry points 
      */
-    function offer(address tokenOffer, address tokenWant, uint256 amountOffer, int256 discount) public nonReentrant() returns(uint256) {
+    function offer(address tokenOffer, address tokenWant, uint256 amountOffer, int256 discount) public nonReentrant() returns(bytes32) {
         require(uint128(amountOffer) == amountOffer);
         require(amountOffer > 0, "ZERO AMOUNT");
         require(tokenOffer != address(0));
         require(tokenWant != address(0));
         // TODO: Check discount cannot be less then -99.999%
+        address sender = _msgSender();        
 
         OfferInfo memory _offer;
         _offer.tokenOffer = tokenOffer;
         _offer.tokenWant = tokenWant;
         _offer.amountOffer = amountOffer;
         _offer.discount = discount;
-        _offer.owner = _msgSender();
+        _offer.owner = sender;
         _offer.createdAt = uint64(block.timestamp);
 
         lastOfferId += 1;
         offers[lastOfferId] = _offer;
 
-        _safeTransferFrom(tokenOffer, _msgSender(), address(this), amountOffer);
+        ERC20(tokenOffer).safeTransferFrom(sender, address(this), amountOffer);
 
         // TODO: Event
         // TODO: Include the token pari which MUST BE SORTED BY UNISWAP!
         emit OfferMade(bytes32(lastOfferId), tokenOffer, tokenWant, amountOffer, discount);
 
-        return lastOfferId;
+        return bytes32(lastOfferId);
     }
 
     function cancel(uint256 offerId) public nonReentrant() canCancel(offerId) returns(bool) {
@@ -172,11 +174,14 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         require(amount <= _offer.amountOffer, "HIGHER THAN OFFER");
         uint256 amountIn = getAmountInForOffer(offerId, amount);
 
+        address sender = _msgSender();
+
         offers[offerId].amountOffer -= amount;
+        
         // TODO: Take fee
 
-        _safeTransferFrom(_offer.tokenWant, _msgSender(), _offer.owner, amountIn);
-        _safeTransfer(_offer.tokenOffer, _msgSender(), amount);
+        ERC20(_offer.tokenWant).safeTransferFrom(sender, _offer.owner, amountIn);
+        ERC20(_offer.tokenOffer).safeTransfer(sender, amount);
 
         // TODO: Emit event
         if (offers[offerId].amountOffer == 0) {
