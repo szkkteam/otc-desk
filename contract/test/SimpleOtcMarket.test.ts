@@ -45,7 +45,7 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
     });
 
 
-    describe("make an offer", async () => {
+    describe("make offer", async () => {
 
         it("in weth", async () => {
             const instance = await SimpleOtcMarket.deployed();    
@@ -157,6 +157,72 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             expect(balanceAfter.toString()).to.be.equal(balanceBefore.toString());
         });
 
+        it("should fail if 0 amount", async () => {
+            const instance = await SimpleOtcMarket.deployed();    
+            const dai = await ERC20.at(daiAddr);
+            const weth = await ERC20.at(wethAddr);  
+
+            await fundWeth(deployer, toWei('1'));    
+
+            const spend = toWei('0.1');
+            const balanceBefore = await weth.balanceOf(deployer);
+            // Must approve before use
+            await weth.approve(instance.address, spend, {from: deployer});
+
+            await truffleAssert.reverts(instance.offer(weth.address, dai.address, toBN(0), toBN(-5000), {from: deployer}), "ZERO_AMOUNT");
+            const balanceAfter = await weth.balanceOf(deployer);
+
+            expect(balanceAfter.toString()).to.be.equal(balanceBefore.toString());
+
+        });
+
+        it("should fail if invalid pair", async () => {
+            const instance = await SimpleOtcMarket.deployed();    
+            const dai = await ERC20.at(daiAddr);
+            const randomToken = await ERC20.at("0xdc0327d50e6c73db2f8117760592c8bbf1cdcf38");  
+
+            await fundDai(deployer, toWei('1'));    
+
+            const spend = toWei('1');
+            const balanceBefore = await dai.balanceOf(deployer);
+            // Must approve before use
+            await dai.approve(instance.address, spend, {from: deployer});
+
+            await truffleAssert.reverts(instance.offer(dai.address, randomToken.address, spend, toBN(-5000), {from: deployer}), "INVALID_PAIR");
+            const balanceAfter = await dai.balanceOf(deployer);
+
+            expect(balanceAfter.toString()).to.be.equal(balanceBefore.toString());
+        
+        });
+
+        it("should fail if discount too much", async () => {
+            const instance = await SimpleOtcMarket.deployed();    
+            const dai = await ERC20.at(daiAddr);
+            const weth = await ERC20.at(wethAddr);  
+
+            await fundWeth(deployer, toWei('1'));    
+
+            const spend = toWei('0.1');
+            // Must approve before use
+            await weth.approve(instance.address, spend, {from: deployer});
+
+            await truffleAssert.reverts(instance.offer(weth.address, dai.address, spend, toBN(-100000), {from: deployer}), "DISCOUNT_UNDERFLOW");
+        });
+    });
+
+    describe("update oracle", () => {
+
+        it("should emit oracle updated event", async () => {
+            const instance = await SimpleOtcMarket.deployed();    
+
+            const newOracleAddress = "0x0000000000000000000000000000000000000001";
+            const currentOracleAddress = await instance.oracleAddress();
+            const tx = await instance.setOracleAddress(newOracleAddress, {from: deployer});
+            truffleAssert.eventEmitted(tx, "OracleUpdated", {oldAddress: currentOracleAddress, newAddress: newOracleAddress});
+            
+            // Set back
+            await instance.setOracleAddress(currentOracleAddress, {from: deployer});
+        });
     });
 
     describe("cancel offer", async() => {
@@ -169,14 +235,17 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             await fundWeth(deployer, toWei('1'));
 
             const spend = toWei('0.1');
+
+            const balanceBefore = await weth.balanceOf(deployer);
             // Must approve before use
             await weth.approve(instance.address, spend, {from: deployer});
 
             await instance.offer(weth.address, dai.address, spend, toBN(-5000), {from: deployer});
             const offerId = await instance.getOfferId();
 
-            const balanceBefore = await weth.balanceOf(deployer);
-            await truffleAssert.passes(instance.cancel(offerId, {from: deployer}));
+            const tx = await instance.cancel(offerId, {from: deployer});
+            truffleAssert.eventEmitted(tx, "OfferCancelled", {offerId: offerId});
+
             const balanceAfter = await weth.balanceOf(deployer);
 
             expect(balanceAfter.toString()).to.be.equal(balanceBefore.toString());
@@ -212,9 +281,27 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             await truffleAssert.reverts(instance.cancel(offerId, {from: user1}), "ONLY_MAKER");
         })
 
+        it("should fail if offer is already cancelled", async () => {
+            const instance = await SimpleOtcMarket.deployed();
+            const dai = await ERC20.at(daiAddr);
+            const weth = await ERC20.at(wethAddr);
+
+            await fundWeth(deployer, toWei('1'));
+
+            const spend = toWei('0.1');
+            // Must approve before use
+            await weth.approve(instance.address, spend, {from: deployer});
+
+            await instance.offer(weth.address, dai.address, spend, toBN(-5000), {from: deployer});
+            const offerId = await instance.getOfferId();
+
+            await instance.cancel(offerId, {from: deployer});
+            await truffleAssert.reverts(instance.cancel(offerId, {from: deployer}), "OFFER_CLOSED");
+        });
+
     });
 
-    describe("take an offer", async () => {
+    describe("take offer", async () => {
 
         it("in weth", async () => { 
             const instance = await SimpleOtcMarket.deployed();    
@@ -240,7 +327,15 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             const daiBalanceDeployerBefore = await dai.balanceOf(deployer);
             const wethBalanceBefore = await weth.balanceOf(user1);
 
-            await truffleAssert.passes(instance.take(offerId, takeSpend, {from: user1}));
+            const tx = await instance.take(offerId, takeSpend, {from: user1});
+            truffleAssert.eventEmitted(tx, "OfferTaken", (ev: any) => {
+                return ev.offerId.toString() === offerId.toString() &&
+                    ev.amountOut.toString() === takeSpend.toString() &&
+                    ev.amountIn.toString() === amountIn.toString() &&
+                    ev.tokenOffer === weth.address &&
+                    ev.tokenWants === dai.address;
+            });
+            truffleAssert.eventEmitted(tx, "OfferFulfilled", {offerId: offerId});
 
             const daiBalanceDeployerAfter = await dai.balanceOf(deployer);
             const wethBalanceAfter = await weth.balanceOf(user1);
@@ -282,6 +377,66 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             expect(wethBalanceDeployerAfter.toString()).to.be.equal(wethBalanceDeployerBefore.add(amountIn).toString());
             expect(daiBalanceAfter.toString()).to.be.equal(daiBalanceBefore.add(toBN(takeSpend)).toString());
         });
+
+        it("should partially fulfilled", async () => {
+            const instance = await SimpleOtcMarket.deployed();    
+            const dai = await ERC20.at(daiAddr);
+            const weth = await ERC20.at(wethAddr);  
+            
+            await fundWeth(deployer, toWei('1'));    
+
+            const spend = toWei('1');
+            let takeSpend = toWei('0.5');
+            // Must approve before use
+            await weth.approve(instance.address, spend, {from: deployer});
+
+            await instance.offer(weth.address, dai.address, spend, toBN(-5000), {from: deployer});
+            const offerId = await instance.getOfferId();
+            // Get the required input amount based on the offer
+            let amountIn: BN = await instance.getAmountInForOffer(offerId, takeSpend);
+
+            await fundDai(user1, amountIn);                
+            await dai.approve(instance.address, amountIn, {from: user1});
+            
+            const daiBalanceDeployerBefore = await dai.balanceOf(deployer);
+            const wethBalanceBefore = await weth.balanceOf(user1);
+
+            const tx = await instance.take(offerId, takeSpend, {from: user1});
+            truffleAssert.eventEmitted(tx, "OfferTaken", (ev: any) => {
+                return ev.offerId.toString() === offerId.toString() &&
+                    ev.amountOut.toString() === takeSpend.toString() &&
+                    ev.amountIn.toString() === amountIn.toString() &&
+                    ev.tokenOffer === weth.address &&
+                    ev.tokenWants === dai.address;
+            });
+            truffleAssert.eventNotEmitted(tx, "OfferFulfilled");
+
+            const daiBalanceDeployerAfter = await dai.balanceOf(deployer);
+            const wethBalanceAfter = await weth.balanceOf(user1);
+
+            expect(daiBalanceDeployerAfter.toString()).to.be.equal(daiBalanceDeployerBefore.add(amountIn).toString());
+            expect(wethBalanceAfter.toString()).to.be.equal(wethBalanceBefore.add(toBN(takeSpend)).toString());
+
+            const { amountOffer, ... rest } = await instance.getOffer(offerId);
+            takeSpend = amountOffer.toString();
+
+            amountIn = await instance.getAmountInForOffer(offerId, takeSpend);
+
+            await fundDai(user2, amountIn);
+            await dai.approve(instance.address, amountIn, {from: user2});
+
+            const tx2 = await instance.take(offerId, takeSpend, {from: user2});
+            truffleAssert.eventEmitted(tx2, "OfferTaken", (ev: any) => {
+                return ev.offerId.toString() === offerId.toString() &&
+                    ev.amountOut.toString() === takeSpend.toString() &&
+                    ev.amountIn.toString() === amountIn.toString() &&
+                    ev.tokenOffer === weth.address &&
+                    ev.tokenWants === dai.address;
+            });
+            truffleAssert.eventEmitted(tx2, "OfferFulfilled", {offerId: offerId});
+
+            
+         });
 
         it("should fail if offer is not found", async () => {
             const instance = await SimpleOtcMarket.deployed();

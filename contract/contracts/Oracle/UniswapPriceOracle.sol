@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.7;
 
+
 /*
-import '../interfaces/uniswap/IUniswapV2Factory.sol';
+
 import '../interfaces/uniswap/IUniswapV2Pair.sol';
 import '../interfaces/uniswap/IUniswapV2Router02.sol';
 */
+import '../interfaces/uniswap/IUniswapV2Factory.sol';
 import './UniswapV2Library.sol';
 import '../interfaces/IPriceOracle.sol';
 
@@ -20,6 +22,14 @@ contract UniswapPriceOracle is IPriceOracle{
 
     constructor(address _factory) {
         factoryAddress = _factory;
+    }
+
+    function getPair(address tokenA, address tokenB) public view virtual override returns (address pair) {
+        return IUniswapV2Factory(factoryAddress).getPair(tokenA, tokenB);
+    }
+
+    function isPairExists(address tokenA, address tokenB) public view virtual override returns (bool) {
+        return (IUniswapV2Factory(factoryAddress).getPair(tokenA, tokenB) != address(0));
     }
 
     function getPriceFor(address tokenA, address tokenB, uint256 amount) public view virtual override  returns (uint256) {

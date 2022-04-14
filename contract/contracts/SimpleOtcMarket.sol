@@ -6,39 +6,49 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import './interfaces/IPriceOracle.sol';
+import "./interfaces/IPriceOracle.sol";
 
-
-contract SimpleOtcMarket is Ownable, ReentrancyGuard{
+contract SimpleOtcMarket is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    bytes4 private constant TRANSFER = bytes4(keccak256(bytes('transfer(address,uint)')));
-    bytes4 private constant TRANSFER_FROM = bytes4(keccak256(bytes('transferFrom(address,address,uint)')));
-
-    address private _oracleAddress;
+    address public oracleAddress;
     uint256 public lastOfferId;
 
     struct OfferInfo {
         address tokenOffer;
         address tokenWant;
-
         address owner;
-
         uint256 amountOffer;
         int256 discount; // measured in 0.0001 %
-
         uint64 createdAt;
     }
 
-    mapping (uint256 => OfferInfo) public offers;
-    
+    mapping(uint256 => OfferInfo) public offers;
+
     event OfferMade(
-        bytes32 indexed offerId, 
-        address indexed tokenOffer, 
+        bytes32 indexed offerId,
+        address indexed tokenOffer,
         address indexed tokenWants,
-        uint256 amount,
+        address pairAddress,
+        uint256 amountIn,
         int256 discount
     );
+
+    event OfferTaken(
+        bytes32 indexed offerId,
+        address indexed tokenOffer,
+        address indexed tokenWants,
+        address pairAddress,
+        uint256 amountIn,
+        uint256 amountOut,
+        int256 discount
+    );
+
+    event OfferFulfilled(bytes32 indexed offerId);
+
+    event OfferCancelled(bytes32 indexed offerId);
+
+    event OracleUpdated(address indexed oldAddress, address indexed newAddress);
 
     /**
         TODO:
@@ -66,8 +76,8 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
 
         https://github.com/daifoundation/maker-otc/blob/master/src/simple_market.sol
      */
-    constructor(address oracleAddress) {
-        _oracleAddress = oracleAddress;
+    constructor(address _oracleAddress) {
+        oracleAddress = _oracleAddress;
     }
 
     modifier canTake(uint256 offerId) {
@@ -93,49 +103,51 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         return bytes32(lastOfferId);
     }
 
-    function getOffer(uint256 offerId) public view returns (/*address tokenOffer, address tokenWant, uint amountOffer, int discount*/ OfferInfo memory) {
+    function getOffer(uint256 offerId)
+        public
+        view
+        returns (
+            /*address tokenOffer, address tokenWant, uint amountOffer, int discount*/
+            OfferInfo memory
+        )
+    {
         OfferInfo memory _offer = offers[offerId];
-        /*
-        tokenOffer = _offer.tokenOffer;
-        tokenWant = _offer.tokenWant;
-        amountOffer = _offer.amountOffer;
-        discount = _offer.discount;
-        */
         return _offer;
-        //return (_offer.tokenOffer, _offer.tokenWant, _offer.amountOffer, _offer.discount);
-    }
-
-    function _safeTransfer(address token, address to, uint value) private {
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(TRANSFER, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TRANSFER_FAILED');
-    }
-
-    function _safeTransferFrom(address token, address from, address to, uint value) private {
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(TRANSFER_FROM, from, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TRANSFER_FROM_FAILED');
     }
 
     /**
      * Owner functions
      */
     function setOracleAddress(address newOracleAddress) external onlyOwner {
-        require(newOracleAddress != address(0));
-        require(newOracleAddress != _oracleAddress);
+        address oldAddress = oracleAddress;
 
-        _oracleAddress = newOracleAddress;
-        // TODO: Emit event
+        require(newOracleAddress != address(0));
+        require(newOracleAddress != oldAddress);
+
+        oracleAddress = newOracleAddress;
+
+        emit OracleUpdated(oldAddress, newOracleAddress);
     }
 
     /**
-     * Public entry points 
+     * Public entry points
      */
-    function offer(address tokenOffer, address tokenWant, uint256 amountOffer, int256 discount) public nonReentrant() returns(bytes32) {
+    function offer(
+        address tokenOffer,
+        address tokenWant,
+        uint256 amountOffer,
+        int256 discount
+    ) public nonReentrant returns (bytes32) {
         require(uint128(amountOffer) == amountOffer);
-        require(amountOffer > 0, "ZERO AMOUNT");
+        require(amountOffer > 0, "ZERO_AMOUNT");
+        require(
+            IPriceOracle(oracleAddress).isPairExists(tokenOffer, tokenWant),
+            "INVALID_PAIR"
+        );
         require(tokenOffer != address(0));
         require(tokenWant != address(0));
-        // TODO: Check discount cannot be less then -99.999%
-        address sender = _msgSender();        
+        require(discount >= int256(-99999), "DISCOUNT_UNDERFLOW");
+        address sender = _msgSender();
 
         OfferInfo memory _offer;
         _offer.tokenOffer = tokenOffer;
@@ -150,24 +162,43 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
 
         IERC20(tokenOffer).safeTransferFrom(sender, address(this), amountOffer);
 
-        // TODO: Event
-        // TODO: Include the token pari which MUST BE SORTED BY UNISWAP!
-        emit OfferMade(bytes32(lastOfferId), tokenOffer, tokenWant, amountOffer, discount);
+        emit OfferMade(
+            bytes32(lastOfferId),
+            tokenOffer,
+            tokenWant,
+            IPriceOracle(oracleAddress).getPair(tokenOffer, tokenWant),
+            amountOffer,
+            discount
+        );
 
         return bytes32(lastOfferId);
     }
 
-    function cancel(uint256 offerId) public nonReentrant() canCancel(offerId) returns(bool) {
+    function cancel(uint256 offerId)
+        public
+        nonReentrant
+        canCancel(offerId)
+        returns (bool)
+    {
         OfferInfo memory _offer = offers[offerId];
         delete offers[offerId];
 
-        _safeTransfer(_offer.tokenOffer, _offer.owner, _offer.amountOffer);
+        IERC20(_offer.tokenOffer).safeTransfer(
+            _offer.owner,
+            _offer.amountOffer
+        );
 
-        // TODO: Event
+        emit OfferCancelled(bytes32(offerId));
+
         return true;
     }
 
-    function take(uint256 offerId, uint256 amount) public nonReentrant() canTake(offerId) returns (bool) {
+    function take(uint256 offerId, uint256 amount)
+        public
+        nonReentrant
+        canTake(offerId)
+        returns (bool)
+    {
         // TODO: Because the market is volatile and during the transaction, the market price can change a lot, introduce slippage
 
         require(uint128(amount) == amount);
@@ -184,24 +215,51 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
 
         // TODO: Take fee
 
-        IERC20(_offer.tokenWant).safeTransferFrom(sender, _offer.owner, amountIn);
+        IERC20(_offer.tokenWant).safeTransferFrom(
+            sender,
+            _offer.owner,
+            amountIn
+        );
         IERC20(_offer.tokenOffer).safeTransfer(sender, amount);
 
-        // TODO: Emit event
+        address pair = IPriceOracle(oracleAddress).getPair(
+            _offer.tokenOffer,
+            _offer.tokenWant
+        );
+
+        emit OfferTaken(
+            bytes32(offerId),
+            _offer.tokenOffer,
+            _offer.tokenWant,
+            pair,
+            amountIn,
+            amount,
+            _offer.discount
+        );
+
         if (offers[offerId].amountOffer == 0) {
             delete offers[offerId];
-            // TODO: Emit event
+
+            emit OfferFulfilled(bytes32(offerId));
         }
 
         return true;
     }
 
-    function getAmountInForOffer(uint256 offerId, uint256 amount) public view canTake(offerId) returns (uint256) {
+    function getAmountInForOffer(uint256 offerId, uint256 amount)
+        public
+        view
+        canTake(offerId)
+        returns (uint256)
+    {
         OfferInfo memory _offer = offers[offerId];
 
-        uint256 amountIn = IPriceOracle(_oracleAddress).getPriceFor(_offer.tokenOffer, _offer.tokenWant, amount);
+        uint256 amountIn = IPriceOracle(oracleAddress).getPriceFor(
+            _offer.tokenOffer,
+            _offer.tokenWant,
+            amount
+        );
         return (amountIn * uint256(int256(100000) + _offer.discount)) / 100000;
         //return amountIn;
     }
-    
 }
