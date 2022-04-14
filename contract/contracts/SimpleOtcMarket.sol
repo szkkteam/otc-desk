@@ -71,13 +71,13 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
     }
 
     modifier canTake(uint256 offerId) {
-        require(isActive(offerId), "OFFER CLOSED");
+        require(isActive(offerId), "OFFER_CLOSED");
         _;
     }
 
     modifier canCancel(uint256 offerId) {
-        require(isActive(offerId), "OFFER CLOSED");
-        require(_msgSender() == getOwner(offerId), "UNAUTHORIZED");
+        require(isActive(offerId), "OFFER_CLOSED");
+        require(_msgSender() == getOwner(offerId), "ONLY_MAKER");
         _;
     }
 
@@ -171,11 +171,11 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         // TODO: Because the market is volatile and during the transaction, the market price can change a lot, introduce slippage
 
         require(uint128(amount) == amount);
-        require(amount > 0, "ZERO AMOUNT");
+        require(amount > 0, "ZERO_AMOUNT");
 
         OfferInfo memory _offer = offers[offerId];
 
-        require(amount <= _offer.amountOffer, "HIGHER THAN OFFER");
+        require(amount <= _offer.amountOffer, "HIGHER_THAN_OFFER");
         uint256 amountIn = getAmountInForOffer(offerId, amount);
 
         address sender = _msgSender();
@@ -200,8 +200,8 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard{
         OfferInfo memory _offer = offers[offerId];
 
         uint256 amountIn = IPriceOracle(_oracleAddress).getPriceFor(_offer.tokenOffer, _offer.tokenWant, amount);
-        //return (amountIn * uint256(int256(100000) + _offer.discount)) / 100000;
-        return amountIn;
+        return (amountIn * uint256(int256(100000) + _offer.discount)) / 100000;
+        //return amountIn;
     }
     
 }

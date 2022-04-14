@@ -4,11 +4,17 @@ const Router = artifacts.require("IUniswapV2Router02")
 
 
 const wethWhale = "0x6555e1CC97d3cbA6eAddebBCD7Ca51d75771e0B8";
+const daiWhale = "0xb60c61dbb7456f024f9338c739b02be68e3f545c";
+
 const wethAddr = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 const daiAddr = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 //const usdcAddr = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const routerAddr = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
 
+export const fundDai = async (to: string, amount: string | number | BN) => {
+    const dai = await ERC20.at(daiAddr);
+    await dai.transfer(to, amount, {from: daiWhale});
+}
 
 export const fundWeth = async (to: string, amount: string | number | BN) => {
     const weth = await ERC20.at(wethAddr);
