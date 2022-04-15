@@ -11,6 +11,11 @@ import "./interfaces/IPriceOracle.sol";
 contract SimpleOtcMarket is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    uint256 private _makerFee;
+    uint256 private _takerFee;
+
+    mapping(address => uint256) private _ownedTokens;
+
     address public oracleAddress;
     uint256 public lastOfferId;
 
@@ -19,11 +24,12 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard {
         address tokenWant;
         address owner;
         uint256 amountOffer;
-        int256 discount; // measured in 0.0001 %
+        int256 discount; // measured in 0.001 %
         uint64 createdAt;
     }
 
     mapping(uint256 => OfferInfo) public offers;
+    
 
     event OfferMade(
         bytes32 indexed offerId,
@@ -49,35 +55,36 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard {
     event OfferCancelled(bytes32 indexed offerId);
 
     event OracleUpdated(address indexed oldAddress, address indexed newAddress);
+    event FeesUpdated(uint256 indexed makerFee, uint256 indexed takerFee);
+    event FeeWithdrawn(address indexed token, uint256 amount);
+
+    /**
+       TODO: Improvements
+       - On-chain governance
+       - Restructure the contract folder
+       - Update the oracle to a more robust version
+       - Add support to swap between non-direct pairs
+       - Create an ERC20 token which can be used to reduce the fees
+       - The ERC20 token should be minted based on usage (Eliminate dust offers and abusers)
+       - Find a way to lock the amountIn price for swaps (between asking price and taking the order)
+       - Think: Storing the funds on an escrow contract?
+     */
 
     /**
         TODO:
-        1) Validáld a basic ötletet, hogy egyáltalán működik e
-        2) Nézd meg, hogy a offer és want az minden esetben jó e
         3) Nézd meg, hogy az offer és want ha fel van cserélve, akkor hogy számolja az outputAmountot
-        # 4) Kell egy sima price lekérés függvény, ami discounttal számol
         5) Vedd el a protocol fee-t
-        # 6) Megoldva, oracle library-vel, aminek a címe állítható - Variálható router address (mi van ha a liquidity az sushin van?)
-        7) Esetleg fixálni az egyik párt WETH-re?
         8) Nézd meg, hogy a contract tud e fogadni token-t, hogy elrakja a fee-t. Honnan tudjuk, hogy melyikből vegyük a fee-t, ha nincs fixálva?
-        # 9) Megoldva azzal, hogy van egy iterátor, amin végig haladva az összes tradet letudjuk kérni - Hogyan kérjük le a teljes listát?
-        # 10) Kéne timestamp a strukturába, hogy mikor készült
-        # 11) Megoldva azzal, hogy ha teljesült az offer, akkor töröljük a listából - Indikálni kéne, hogy mikor zárult le 1 trade
-        # 12) My trades-hez kéne egy map, hogy a userhez mely tradek tartoznak (Ha ez csak reprezentációra kell a frontenden, akkor érdemes egy view pure-t csinálni rá, ami végig iterál)
-        13) tokenOffer approválva a create résznél van. Ha valaki közbe vissza vonja az approve-ot, akkor a trader résznél elfog szállni
-            lehet, hogy permit-et kéne használni, vagy signature-t? Akkor meg a taker fogja fizetni annak is a gas-t
-        # 14) kell egy cancel trade függvény is, amit csak a maker tud hívni. Hogy reprezentáljuk a canceled makert?
-        15) kell egy update trade függvény is, amit csak a maker tud hívni
-        # 16) Megoldva azzal, hogy van egy isActive függvény, és ha fulfill akkor delete az object - kell egy trade valid függvény, ami megnézi, hogy még mindig approválva van e a mennyiség és nincs e cancelelve, vagy fullfillelve
-        17) kell egy price lekérés függvény, ami a token ratiot megmondja
         18) dust offer protection, kell egy mininmum amount
-        # 19) Oracle lib-be ki lehet mozgatni a uniswap-os részt
         20) kell egy rész, hogy meddig valid az offer
 
         https://github.com/daifoundation/maker-otc/blob/master/src/simple_market.sol
      */
     constructor(address _oracleAddress) {
         oracleAddress = _oracleAddress;
+
+        _makerFee = 500; // 0.5%
+        _takerFee = 1500; // 1.5%
     }
 
     modifier canTake(uint256 offerId) {
@@ -103,16 +110,22 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard {
         return bytes32(lastOfferId);
     }
 
-    function getOffer(uint256 offerId)
-        public
-        view
-        returns (
-            /*address tokenOffer, address tokenWant, uint amountOffer, int discount*/
-            OfferInfo memory
-        )
-    {
+    function getOffer(uint256 offerId) public view returns (OfferInfo memory) {
         OfferInfo memory _offer = offers[offerId];
         return _offer;
+    }
+
+    function calculateFees(uint256 amountIn, uint256 amountOut) internal view returns (
+        uint256 makerFee,
+        uint256 takerFee
+    ) {
+        makerFee = amountIn * _makerFee / 100000;
+        takerFee = amountOut * _takerFee / 100000;
+        return (makerFee, takerFee);
+    }
+    
+    function registerFeeToken(address token, uint256 amount) internal {
+        _ownedTokens[token] += amount;
     }
 
     /**
@@ -127,6 +140,35 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard {
         oracleAddress = newOracleAddress;
 
         emit OracleUpdated(oldAddress, newOracleAddress);
+    }
+
+    function setFees(uint256 makerFee, uint256 takerFee) external onlyOwner {
+        require(makerFee > 0 && makerFee <= 1500); // 0% < makerFee <= 1.5%
+        require(takerFee > 0 && takerFee <= 3000); // 0% < takerFee <= 3%
+
+        _makerFee = makerFee;
+        _takerFee = takerFee;
+
+        emit FeesUpdated(makerFee, takerFee);
+    }
+
+    function getFeeTokenAmount(address token) external onlyOwner returns (uint256) {
+        return _ownedTokens[token];
+    }
+
+    function withDrawFeeToken(address token, uint256 amount) external onlyOwner {
+        require(amount > 0);
+        require(_ownedTokens[token] > 0);
+        require(_ownedTokens[token] >= amount);
+
+        IERC20 tokenContract = IERC20(token);
+
+        _ownedTokens[token] -= amount;
+
+        tokenContract.approve(address(this), amount);
+        tokenContract.safeTransfer(_msgSender(), amount);
+
+        emit FeeWithdrawn(token, amount);
     }
 
     /**
@@ -213,14 +255,29 @@ contract SimpleOtcMarket is Ownable, ReentrancyGuard {
 
         offers[offerId].amountOffer -= amount;
 
-        // TODO: Take fee
+        (uint256 makerFee, uint256 takerFee) = calculateFees(amountIn, amount);
 
+        // Take the fee from the maker
+        IERC20(_offer.tokenWant).safeTransferFrom(
+            sender,
+            address(this),
+            makerFee
+        );
+        // Register the fee token amount
+        registerFeeToken(_offer.tokenWant, makerFee);
+        registerFeeToken(_offer.tokenOffer, takerFee);
+        
+        // Take the fee from the taker. This token is already owned by the contract, so just substract the fee
+        // Do no transfer anything here.
+
+        // Fulfill the maker
         IERC20(_offer.tokenWant).safeTransferFrom(
             sender,
             _offer.owner,
-            amountIn
+            amountIn - makerFee
         );
-        IERC20(_offer.tokenOffer).safeTransfer(sender, amount);
+        // Fullfill the taker
+        IERC20(_offer.tokenOffer).safeTransfer(sender, amount - takerFee);
 
         address pair = IPriceOracle(oracleAddress).getPair(
             _offer.tokenOffer,

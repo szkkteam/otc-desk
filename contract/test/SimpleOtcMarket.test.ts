@@ -33,6 +33,13 @@ const daiAddr = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 //const usdcAddr = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const routerAddr = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
 
+const compensateWithTakerFee = (amount: BN, takerFee: BN = toBN(1500)) => {
+    return amount.sub(amount.mul(takerFee).div(toBN(100000)));
+}
+
+const compensateWithMakerFee = (amount: BN, makerFee: BN = toBN(500)) => {
+    return amount.sub(amount.mul(makerFee).div(toBN(100000)));
+}
 
 contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
 
@@ -223,6 +230,13 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             // Set back
             await instance.setOracleAddress(currentOracleAddress, {from: deployer});
         });
+
+        it("should fail if not owner", async () => {
+            const instance = await SimpleOtcMarket.deployed();    
+
+            const newOracleAddress = "0x0000000000000000000000000000000000000001";
+            await truffleAssert.fails(instance.setOracleAddress(newOracleAddress, {from: user1}));
+        });
     });
 
     describe("cancel offer", async() => {
@@ -340,8 +354,8 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             const daiBalanceDeployerAfter = await dai.balanceOf(deployer);
             const wethBalanceAfter = await weth.balanceOf(user1);
 
-            expect(daiBalanceDeployerAfter.toString()).to.be.equal(daiBalanceDeployerBefore.add(amountIn).toString());
-            expect(wethBalanceAfter.toString()).to.be.equal(wethBalanceBefore.add(toBN(takeSpend)).toString());
+            expect(daiBalanceDeployerAfter.toString()).to.be.equal(daiBalanceDeployerBefore.add(compensateWithMakerFee(amountIn)).toString());
+            expect(wethBalanceAfter.toString()).to.be.equal(wethBalanceBefore.add(compensateWithTakerFee(toBN(takeSpend))).toString());
         });
 
         it("in dai", async () => {
@@ -374,8 +388,8 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             const wethBalanceDeployerAfter = await weth.balanceOf(deployer);
             const daiBalanceAfter = await dai.balanceOf(user1);
 
-            expect(wethBalanceDeployerAfter.toString()).to.be.equal(wethBalanceDeployerBefore.add(amountIn).toString());
-            expect(daiBalanceAfter.toString()).to.be.equal(daiBalanceBefore.add(toBN(takeSpend)).toString());
+            expect(wethBalanceDeployerAfter.toString()).to.be.equal(wethBalanceDeployerBefore.add(compensateWithMakerFee(amountIn)).toString());
+            expect(daiBalanceAfter.toString()).to.be.equal(daiBalanceBefore.add(compensateWithTakerFee(toBN(takeSpend))).toString());
         });
 
         it("should partially fulfilled", async () => {
@@ -399,6 +413,7 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             await dai.approve(instance.address, amountIn, {from: user1});
             
             const daiBalanceDeployerBefore = await dai.balanceOf(deployer);
+
             const wethBalanceBefore = await weth.balanceOf(user1);
 
             const tx = await instance.take(offerId, takeSpend, {from: user1});
@@ -414,8 +429,8 @@ contract("SimpleOtcMarket", ([deployer, user1, user2, user3, user4]) => {
             const daiBalanceDeployerAfter = await dai.balanceOf(deployer);
             const wethBalanceAfter = await weth.balanceOf(user1);
 
-            expect(daiBalanceDeployerAfter.toString()).to.be.equal(daiBalanceDeployerBefore.add(amountIn).toString());
-            expect(wethBalanceAfter.toString()).to.be.equal(wethBalanceBefore.add(toBN(takeSpend)).toString());
+            expect(daiBalanceDeployerAfter.toString()).to.be.equal(daiBalanceDeployerBefore.add(compensateWithMakerFee(amountIn)).toString());
+            expect(wethBalanceAfter.toString()).to.be.equal(wethBalanceBefore.add(compensateWithTakerFee(toBN(takeSpend))).toString());
 
             const { amountOffer, ... rest } = await instance.getOffer(offerId);
             takeSpend = amountOffer.toString();
